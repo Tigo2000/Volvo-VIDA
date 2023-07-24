@@ -1,0 +1,22 @@
+A1 No Operation Performed (keep alive)
+A3 Security Access Mode
+A5 Read Current Data By Offset
+A6 Read Current Data By Identifier
+A7 Read Current Data By Address
+A8 Set Data Transmission
+A9 Stop Data Transmission
+AA Dynamically Define Record
+AB Read Freeze Frame Data By Offset
+AC Read Freeze Frame
+AD Read Freeze Frame By DTC
+AE Read DTC
+AF Clear DTC
+
+B0 Input Output Control By Offset
+B1 Input Output Control By Identifier
+B2 Control Routine By Offset
+B4 Define Read Write ECU data
+B8 Write Data Block By Offset
+B9 Read Data Block By Offset
+BA Write Data Block By Address
+BB Read Data Block By Address
