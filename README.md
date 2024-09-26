@@ -1,25 +1,26 @@
 # Volvo-VIDA
-Reverse engineering Volvo VIDA for retrieving information from the CAN-bus.
+A guide to reverse engineer the Volvo VIDA application to extract and analyze information from the CAN-bus from Volvo's, including exporting engine data and reading Diagnostic Trouble Codes (DTCs).
 
-With the files in this repository, a lot of information buried deep inside VIDA can be easily exported. It's also possible to read Diagnostic Trouble Codes (DTCs)! 
 
 The repositories and internet articles below have been a great help for this project.
 - alfaa123 - <a href="http://github.com/Alfaa123/Volvo-CAN-Gauge" target=_blank>Volvo-CAN-Gauge</a>
 - <a href="http://www.stevediraddo.com/2019/01/13/volvo-canbus-tinkering/" target=_blank>Volvo CANBUS Tinkering</a>
-- <a href="https://waal70blog.wordpress.com/2015/12/02/the-can-network-on-a-volvo-part-three-message-interpretation/" target=_blank>CAN Network on a Volvo - Part three - Request Message format</a> (their github repo might be interesting as well: <a href="https://github.com/waal70/S60CAN" target=_blank>S60CAN</a>)
-
+- <a href="https://waal70blog.wordpress.com/2015/12/02/the-can-network-on-a-volvo-part-three-message-interpretation/" target=_blank>CAN Network on a Volvo - Part three - Request Message format</a> and <a href="https://github.com/waal70/S60CAN" target=_blank>S60CAN</a>
 
 ### Setup:
 - Volvo C30 T5 2008
 - VIDA 2014D running on Windows 7
-- VIDA databases running in a MSSQL Docker container for easier/faster PowerShell access (optional)
-- DICE CANBus sniffer (optional)
+- VIDA databases running in a MSSQL Docker container for easier PowerShell access
+- DICE CANBus sniffer
+- Raspberry Pi + MCP2515 CAN Interface
 
-## VIDA
+## Volvo VIDA Reverse engineering
 As VIDA is able to diagnose cars without an internet connection, all the data needed for this communication is presumably stored locally, alongside VIDA itself. A prime candidate for this storage is MSSQL. In `C:\Vida\`, there's a file called "VidaConfigApplication.Exe.Config", which contains the following SQL credentials:
 
-> DBUser: sa<br>
-> DBPass: GunnarS3g3
+```
+DBUser: sa
+DBPass: GunnarS3g3
+```
 
 Using these credentials, you can open the SQL databases using something like Microsoft SQL Management Studio. The most important databases are `carcom` and `DiagSwdlRepository`, these contain information that we are most interested in. As the name would suggest, the carcom database (probably) contains all the car-information that VIDA uses to communicate with any connected vehicles. Some of the most important tables are:
 
@@ -29,23 +30,23 @@ Using these credentials, you can open the SQL databases using something like Mic
 - T150_Blockvalue
 - T191_TextData  
 
-All the databases also contain SQL 'Stored Procedures' and (table) Functions. These procedures are called from VIDA, and contain certain steps to retrieve information from the different SQL databases and tables. For example, when selecting a car on the Vehicle Profile screen in VIDA, the procedure 'GetCompatibleProfiles' from the database CarCom is called. The GetCompatibleProfiles procedure consists of a SQL query to select the vehicle-model, year, engine, transmission, steering config, market etc. Subsequently clicking on 'Diagnostics' calls the procedure 'GetEcuTypeDescriptions', where all the ECUs (for the vehicle selected in Vehicle Profile) are retrieved. That query looks like: `SELECT DISTINCT identifier, description from T102_EcuType WHERE identifier <> 0`. The steps for every single action performed in VIDA can be found in these procedures.
+All the databases also contain SQL 'Stored Procedures' and (table) Functions. These procedures are called from VIDA, and contain certain steps to retrieve information from the different SQL databases and tables. For example, when a car is selected on the Vehicle Profile screen in VIDA, the stored procedure GetCompatibleProfiles from the CarCom database is executed. The GetCompatibleProfiles procedure consists of a SQL query to select the vehicle-model, year, engine, transmission, steering config, market etc. Subsequently clicking on 'Diagnostics' calls the procedure 'GetEcuTypeDescriptions', where all the ECUs (for the vehicle selected in Vehicle Profile) are retrieved. That query looks like: `SELECT DISTINCT identifier, description from T102_EcuType WHERE identifier <> 0`. The steps for every single action performed in VIDA can be found in these procedures.
 
 With the information in these procedures and functions, I was able to make some queries myself (which can be found in this repo) that can be used to easily select the ECU identifiers and hex values to retrieve ecu-related data from my car. Below some examples which you can retrieve from your vehicle using these CAN-values:
 
-**ECM:**<br>
+**ECM:** 
 - A/C Pressure
 - Boost Pressure
 - Lambda sensor readings
-- Engine speed
+- Engine speed (RPM)
 - Vehicle speed
 
-**BCM:**<br>
+**BCM:** 
 - Yaw sensor 
 - Velocity of car
 - Acceleration of each wheel in m/s²
 
-**DIM:**<br>
+**DIM:** 
 - Fuel level
 - Hours since last service
 
@@ -105,7 +106,7 @@ As you can see, when VIDA is started and you select the correct vehicle profile 
 > 16:51:39,232 [CarComRepository][001][Event]   Database: CarCom, SP: vadis_GetParameterData, EcuId: 1310, TextId: 5249, Id: **129D**<br>
 > 16.51.39,247 [ScriptProvider][001][Event]   Database:  DiagSwdlRepository, SP: GetValidLinksForSelected<br>
 
-The Stored Procedure `vadis_GetParameterData` returns the text `PVDKDS : Pressure in front of throttle valve of pressure sensor` and `Boost Pressure` as a shorter name, and most importantly the hex value 0x12, 0x9D. Using this hex value in a Diagnostic CAN request, the current boost pressure is returned by the ECM.
+The Stored Procedure `vadis_GetParameterData` returns the text `PVDKDS : Pressure in front of throttle valve of pressure sensor` and `Boost Pressure` as a shorter name, and most importantly the hex value 0x12, 0x9D. Using this hex value in a Diagnostic CAN request, the current boost pressure will be returned by the ECM.
 
 To recap:
 - Database: CarCom
@@ -120,9 +121,10 @@ The file `Get-ParameterDataUsingEcuAndTextId.sql` in this repo is very similar t
 
 
 ## CAN messages
-The Volvo VIDA protocol is a diagnostic protocol similar to UDS. However, unlike UDS the VIDA protocol, the first byte is a DLC and the second byte is the ECU address. An example can be found below:
+The Volvo VIDA diagnostic protocol is similar to UDS, but with notable differences. In VIDA, the first byte represents the DLC (Data Length Code), while the second byte represents the ECU address.
 
-**Request**: ID: `0x000FFFFE` Data: `CD 7A A6 12 9D 01 00 00`
+**Request:**  
+ID: `0x000FFFFE` Data: `CD 7A A6 12 9D 01 00 00`
 - 0x000FFFFE is the CAN diagnostic address
 - CD is C8 + number of significant bytes to follow.
 - 7A is the address of the ME7 ECU (ECM)
@@ -131,8 +133,9 @@ The Volvo VIDA protocol is a diagnostic protocol similar to UDS. However, unlike
 - 01 is probably "Send the record once"
 - 00s are padding the rest of the frame to keep it 8 bytes long
 
-**Response:** ID `0x00400021` Data: `CD 7A E6 12 9D 95 00 00`
-- 00400021 is the CAN address for response
+**Response:**  
+ID `0x00400021` Data: `CD 7A E6 12 9D 95 00 00`
+- 00400021 is the CAN address for response for this particular ECU
 - CD is C8 + number of significant bytes to follow.
 - 7A is the address of the ME7 ECU
 - E6 is response to A6
@@ -146,22 +149,83 @@ There are more commands besides `A6`. The requestType returned in the earlier SQ
 
 With the CAN values exported from VIDA using the scripts in this repo, we can easily retrieve a ton of information from the different ECUs in our car. Some examples:
 
-- (ECM) Battery Voltage: `0x000FFFFE CD 7A A6 10 0A 01 00 00` -> Response: `0x00400021 CD 7A E6 10 0A 94 00 00` -> 96 -> 150
-- (DIM) Total Fuel Level: `0x000FFFFE CD 51 A6 00 01 01 00 00` -> Response: `0x00600009 CD 51 E6 00 01 6A 00 00` -> 6A -> 106
-- (DIM) Hours since Service: `0x000FFFFE CD 51 B9 07 00 00 00 00` -> Response: `0x00600009 F9 11 F9 00 D9 00 00 00` -> D9 -> 217
+<details open>
+    <summary>(ECM) Battery Voltage</summary> 
 
+```
+    Request: 0x000FFFFE CD 7A A6 10 0A 01 00 00
+    Response: 0x00400021 CD 7A E6 10 0A 96 00 00 
+        
+    Hex return value: 96
+```
+</details> 
+
+<details>
+    <summary>(DIM) Total Fuel Level</summary> 
+
+```
+    Request: 0x000FFFFE CD 51 A6 00 01 01 00 00
+    Response: 0x00600009 CD 51 E6 00 01 6A 00 00 
+        
+    Hex return value: 6A
+```
+</details> 
+
+<details>
+    <summary>(DIM) Hours since Service</summary> 
+
+```
+    Request: 0x000FFFFE CD 51 B9 07 00 00 00 00
+    Response: 0x00600009 F9 51 F9 00 D9 00 00 00
+        
+    Hex return value: D9
+```
+</details> 
+
+<br>
 As seen above, the Response ID for every ECU is different. Also, the command `B9` (Read Data Block By Offset) returns its response in message byte 5 instead of 6 (command A6). The responses are all in hex, so these have to be converted to decimal.
 
-The response values are not in the correct unit yet and/or do not have the correct scaling applied. This is where the Conversion Factor comes in to play. In the exported Parameter data, it also shows the unit of the final response and a mathematical calculation how to scale the response correctly. For the above parameters:
+The response values are also not in the correct unit yet and do not have the correct scaling applied. This is where the Conversion Factor comes in to play. In the exported Parameter data, it shows the unit of the final response and a mathematical calculation how to scale the response correctly. For the above parameters:
 
-- (ECM) Battery Voltage: `x*1/10.6113989637306` -> `150*1/10.6113989637306` -> 14.14 Volts
-- (DIM) Total Fuel Level: `x/2` -> `106/2` -> 53 Litres
-- (DIM) Hours since Service: `x*1` -> `217*1` = 217 Hours
+- (ECM) Battery Voltage: `x * 1 / 10.6113989637306` -> `150 * 1 / 10.6113989637306` = 14.14 Volts
+- (DIM) Total Fuel Level: `x / 2` -> `106 / 2` = 53 Litres
+- (DIM) Hours since Service: `x * 1` -> `217 * 1` = 217 Hours
 
 Not all ECUs in a vehicle are connected to the same CAN-bus. For example, the ECM in my car runs at 500kbps (high speed), whereas the DIM (Driver Information Module, gauge cluster) only responds to CAN messages sent on the 125kbps bus. (low speed) An overview of which ECU is connected to which CAN-bus can be found in VIDA.       
 
 ### CAN-bus sniffing
 When I started this project, I used a canbus sniffer to retrieve information from the car. This worked but it took a lot of time, mostly because it's not directly obvious which CAN-message is associated with a certain function in the car. Having found all the ECU parameters data in SQL, I have not needed to sniff for messages on the bus anymore.
+
+### Getting the address/IDs of an ECU
+The addresses of some ECUs are known (like the ME7 ECU in my car), but for other engines the ID is not known yet. If you connect your car to VIDA and dump the table `[DiagSwdlSession].[dbo].[EcuInfo]`, you will see the ECU address (in decimal). In the case of the ME7 ECM the Address is `122`, which would be `7A` in hexadecimal. This is the target address you would use to send requests to this particular ECU.
+
+In case you do not have VIDA and a DICE cable, you could try to brute-force the device IDs with the provided Python script in this repo on for example a Raspberry Pi and a CAN transceiver like a MCP2515, or a CarPiHAT. The script will loop through all possible device/target-id's (`0x00` to `0xFF`), and it will request the Diagnostic Trouble Codes from each device. Once all possible device IDs have been checked, the script will stop and show the list of active devices.
+
+As an example, the script returns:
+
+```
+Devices found!  
+Device ID: 29, Response ID: 00601001  
+Device ID: 54, Response ID: 00604001  
+```
+
+Once you have the target IDs of all the devices in your car, you can send an actual CAN message request with a request parameter and listen for a response using the response ID. This way you will be able to match the device ID with a particular ECU in the car. It would look something like this:
+
+> cansend can0 000FFFFE#CD29A61C0401000  
+
+Here's a breakdown of this message:
+
+**Request:**  
+ID: `0x000FFFFE` Data: `CD 29 A6 1C 04 01 00 00`
+- 0x000FFFFE is the CAN diagnostic address
+- `CD` is `C8` + number of significant bytes to follow.
+- `29` is the address of an ECU found by the brute-force script 
+- `A6` is the "Read Current Data By Identifier" command
+- `1C 04` is a request parameter exported using a PowerShell script which is unique to the ICM.
+- `01` is probably "Send the record once"
+- 00s are padding the rest of the frame to keep it 8 bytes long
+
+There will likely only be one device that will respond to this request even though you send it to all devices, as it is the only ECU which has this request parameter. With this method, it will take a bit of effort to figure out which device is which. 
 
 ## Scripts
 Below you can find more information about the PowerShell scripts in this repo and how to use them.
@@ -183,6 +247,6 @@ With the scripts `Parse/Search-XMLFiles.ps1`, you can easily search through the 
 
 ## Disclaimer
 
-There might be some scripts or parameter values which you can use to communicate/interfere with safety systems and/or deploy airbags, enter crash mode, etc. I am not in anyway responsible for any damage inflicted to your vehicle using the parameter values and/or scripts which you can export using the files in this repo.<br>
+Some scripts or parameter values provided in this repository may interact with critical safety systems (e.g., airbags, crash mode). I take no responsibility for any damage or malfunction that occurs from using the parameter values, scripts, or files in this repository.
 
 If you have any questions about the information provided in this repo or if you have any more information about VIDA, do not hesitate to get in touch!    
